@@ -1,0 +1,39 @@
+{
+  "name": "cursor-commander",
+  "displayName": "Cursor Commander",
+  "description": "Exposes VS Code/Cursor editor commands as MCP tools",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "smith",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cursorCommander.showPort",
+        "title": "Cursor Commander: Show Server Port"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "node --test --test-timeout=30000 --test-concurrency=1 test/extension.test.mjs test/mcp-bridge.test.mjs",
+    "test:extension": "node --test test/extension.test.mjs",
+    "test:bridge": "node --test test/mcp-bridge.test.mjs",
+    "package": "npx @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
