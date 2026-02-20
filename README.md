@@ -38,3 +38,8 @@ The MCP server is already configured in `~/.cursor/mcp.json`.
 | `get_open_files` | List open files |
 | `show_message` | Show a notification |
 | `execute_command` | Run any VS Code command by ID |
+| `list_terminals` | List all open integrated terminals |
+| `create_terminal` | Create a new terminal (optional name, cwd, env) |
+| `send_terminal_text` | Send text/commands to a terminal |
+| `show_terminal` | Show/focus a terminal |
+| `close_terminal` | Close a terminal |

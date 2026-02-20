@@ -5,17 +5,58 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-const PORT_FILE = path.join(os.homedir(), '.cursor-commander-port');
+const PORTS_DIR = path.join(os.homedir(), '.cursor-commander-ports');
+const TEST_WORKSPACE = '/Users/test/Code/my-project';
+const TEST_PORT_KEY = 'Users-test-Code-my-project';
+const TEST_PORT_FILE = path.join(PORTS_DIR, TEST_PORT_KEY);
 
 // --- vscode mock ---
+
+function createMockTerminal(name, processId = 1234) {
+  return {
+    name,
+    processId: Promise.resolve(processId),
+    sendText: mock.fn(),
+    show: mock.fn(),
+    hide: mock.fn(),
+    dispose: mock.fn(),
+  };
+}
+
+function createMockStatusBarItem() {
+  return {
+    text: '',
+    tooltip: '',
+    color: undefined,
+    name: '',
+    show: mock.fn(),
+    hide: mock.fn(),
+    dispose: mock.fn(),
+  };
+}
 
 function createVscodeMock() {
   const executedCommands = [];
   const mockTabs = [];
+  const mockTerminals = [];
+  let mockActiveTerminal = undefined;
+  let mockCreateTerminal = mock.fn((options) => {
+    const t = createMockTerminal(options?.name || 'default');
+    mockTerminals.push(t);
+    return t;
+  });
+  const mockStatusBarItem = createMockStatusBarItem();
 
   return {
     executedCommands,
     mockTabs,
+    mockTerminals,
+    mockStatusBarItem,
+    get mockActiveTerminal() { return mockActiveTerminal; },
+    set mockActiveTerminal(v) { mockActiveTerminal = v; },
+    mockCreateTerminal,
+    StatusBarAlignment: { Left: 1, Right: 2 },
+    ThemeColor: class ThemeColor { constructor(id) { this.id = id; } },
     commands: {
       executeCommand: mock.fn(async (...args) => {
         executedCommands.push(args);
@@ -26,11 +67,20 @@ function createVscodeMock() {
       setStatusBarMessage: mock.fn(),
       showInformationMessage: mock.fn(async () => {}),
       showWarningMessage: mock.fn(async () => {}),
+      createStatusBarItem: mock.fn(() => mockStatusBarItem),
       tabGroups: {
         get all() {
           return [{ tabs: mockTabs }];
         },
       },
+      get terminals() { return mockTerminals; },
+      get activeTerminal() { return mockActiveTerminal; },
+      get createTerminal() { return mockCreateTerminal; },
+    },
+    workspace: {
+      workspaceFolders: [
+        { uri: { fsPath: TEST_WORKSPACE }, name: 'my-project', index: 0 },
+      ],
     },
     Uri: {
       file: (p) => ({ fsPath: p, scheme: 'file' }),
@@ -140,7 +190,7 @@ describe('Extension HTTP Server', () => {
 
     // Wait for server to start and port file to be written
     await new Promise((resolve) => setTimeout(resolve, 200));
-    const portStr = fs.readFileSync(PORT_FILE, 'utf-8').trim();
+    const portStr = fs.readFileSync(TEST_PORT_FILE, 'utf-8').trim();
     port = parseInt(portStr, 10);
     assert.ok(port > 0, `Expected valid port, got ${portStr}`);
   });
@@ -151,9 +201,9 @@ describe('Extension HTTP Server', () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
   });
 
-  it('writes a port file on activation', () => {
-    assert.ok(fs.existsSync(PORT_FILE));
-    const p = parseInt(fs.readFileSync(PORT_FILE, 'utf-8').trim(), 10);
+  it('writes a workspace-scoped port file on activation', () => {
+    assert.ok(fs.existsSync(TEST_PORT_FILE));
+    const p = parseInt(fs.readFileSync(TEST_PORT_FILE, 'utf-8').trim(), 10);
     assert.equal(p, port);
   });
 
@@ -276,6 +326,158 @@ describe('Extension HTTP Server', () => {
 
   it('removes port file on deactivate', () => {
     loaded.ext.deactivate();
-    assert.ok(!fs.existsSync(PORT_FILE));
+    assert.ok(!fs.existsSync(TEST_PORT_FILE));
+  });
+
+  // --- Terminal commands ---
+
+  it('handles listTerminals with no terminals', async () => {
+    const res = await postCommand(port, 'listTerminals');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.result, []);
+  });
+
+  it('handles listTerminals with terminals present', async () => {
+    const t1 = createMockTerminal('zsh', 111);
+    const t2 = createMockTerminal('node', 222);
+    vscodeMock.mockTerminals.push(t1, t2);
+    vscodeMock.mockActiveTerminal = t1;
+
+    const res = await postCommand(port, 'listTerminals');
+    assert.equal(res.status, 200);
+    const result = res.body.result;
+    assert.equal(result.length, 2);
+    assert.equal(result[0].name, 'zsh');
+    assert.equal(result[0].isActive, true);
+    assert.equal(result[0].processId, 111);
+    assert.equal(result[1].name, 'node');
+    assert.equal(result[1].isActive, false);
+    assert.equal(result[1].processId, 222);
+  });
+
+  it('handles createTerminal with name and cwd', async () => {
+    const res = await postCommand(port, 'createTerminal', {
+      name: 'my-term',
+      cwd: '/tmp',
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.result.name, 'my-term');
+    assert.equal(vscodeMock.mockCreateTerminal.mock.calls.length, 1);
+    const callArgs = vscodeMock.mockCreateTerminal.mock.calls[0].arguments[0];
+    assert.equal(callArgs.name, 'my-term');
+    assert.equal(callArgs.cwd, '/tmp');
+  });
+
+  it('handles sendTerminalText by index', async () => {
+    const t = createMockTerminal('zsh');
+    vscodeMock.mockTerminals.push(t);
+
+    const res = await postCommand(port, 'sendTerminalText', {
+      index: 0,
+      text: 'echo hello',
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.body.result, /Sent text/);
+    assert.equal(t.sendText.mock.calls.length, 1);
+    assert.equal(t.sendText.mock.calls[0].arguments[0], 'echo hello');
+  });
+
+  it('handles sendTerminalText by name', async () => {
+    const t = createMockTerminal('build');
+    vscodeMock.mockTerminals.push(t);
+
+    const res = await postCommand(port, 'sendTerminalText', {
+      name: 'build',
+      text: 'npm run build',
+    });
+    assert.equal(res.status, 200);
+    assert.equal(t.sendText.mock.calls.length, 1);
+    assert.equal(t.sendText.mock.calls[0].arguments[0], 'npm run build');
+  });
+
+  it('handles sendTerminalText using active terminal', async () => {
+    const t = createMockTerminal('active-shell');
+    vscodeMock.mockTerminals.push(t);
+    vscodeMock.mockActiveTerminal = t;
+
+    const res = await postCommand(port, 'sendTerminalText', { text: 'ls' });
+    assert.equal(res.status, 200);
+    assert.equal(t.sendText.mock.calls.length, 1);
+  });
+
+  it('returns error for sendTerminalText with no active terminal', async () => {
+    const res = await postCommand(port, 'sendTerminalText', { text: 'ls' });
+    assert.equal(res.status, 500);
+    assert.match(res.body.error, /No active terminal/);
+  });
+
+  it('returns error for sendTerminalText with bad index', async () => {
+    const res = await postCommand(port, 'sendTerminalText', {
+      index: 99,
+      text: 'ls',
+    });
+    assert.equal(res.status, 500);
+    assert.match(res.body.error, /out of range/);
+  });
+
+  it('returns error for sendTerminalText with unknown name', async () => {
+    const res = await postCommand(port, 'sendTerminalText', {
+      name: 'nope',
+      text: 'ls',
+    });
+    assert.equal(res.status, 500);
+    assert.match(res.body.error, /No terminal named/);
+  });
+
+  it('handles showTerminal by index', async () => {
+    const t = createMockTerminal('zsh');
+    vscodeMock.mockTerminals.push(t);
+
+    const res = await postCommand(port, 'showTerminal', { index: 0 });
+    assert.equal(res.status, 200);
+    assert.match(res.body.result, /Showing terminal/);
+    assert.equal(t.show.mock.calls.length, 1);
+  });
+
+  it('handles closeTerminal by name', async () => {
+    const t = createMockTerminal('disposable');
+    vscodeMock.mockTerminals.push(t);
+
+    const res = await postCommand(port, 'closeTerminal', { name: 'disposable' });
+    assert.equal(res.status, 200);
+    assert.match(res.body.result, /Closed terminal/);
+    assert.equal(t.dispose.mock.calls.length, 1);
+  });
+
+  // --- Agent status ---
+
+  it('handles setAgentStatus thinking', async () => {
+    const res = await postCommand(port, 'setAgentStatus', { status: 'thinking' });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.result, 'Agent status: thinking');
+    const item = vscodeMock.mockStatusBarItem;
+    assert.equal(item.text, '$(loading~spin)');
+    assert.equal(item.tooltip, 'Agent is working...');
+    assert.equal(item.color, undefined);
+    assert.ok(item.show.mock.calls.length >= 1);
+  });
+
+  it('handles setAgentStatus idle', async () => {
+    const res = await postCommand(port, 'setAgentStatus', { status: 'idle' });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.result, 'Agent status: idle');
+    const item = vscodeMock.mockStatusBarItem;
+    assert.equal(item.text, '$(circle-filled)');
+    assert.equal(item.tooltip, 'Waiting for you');
+    assert.equal(item.color.id, 'testing.iconPassed');
+    assert.ok(item.show.mock.calls.length >= 1);
+  });
+
+  it('handles setAgentStatus off (hides item)', async () => {
+    await postCommand(port, 'setAgentStatus', { status: 'thinking' });
+    const res = await postCommand(port, 'setAgentStatus', { status: 'off' });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.result, 'Agent status: off');
+    assert.ok(vscodeMock.mockStatusBarItem.hide.mock.calls.length >= 1);
   });
 });
