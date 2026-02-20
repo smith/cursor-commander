@@ -376,7 +376,7 @@ describe('MCP Bridge', () => {
     assert.equal(sendCmd.args.text, 'echo hello');
   });
 
-  it('sends thinking/idle status updates around tool calls', async () => {
+  it('sends thinking status immediately and debounces idle', async () => {
     child = spawn('node', [BRIDGE_PATH], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -401,17 +401,14 @@ describe('MCP Bridge', () => {
     });
     await waitForResponse(child, 2);
 
-    // Allow status update requests to arrive
-    await new Promise((r) => setTimeout(r, 300));
+    // Allow the synchronous thinking status to arrive
+    await new Promise((r) => setTimeout(r, 500));
 
     const statusCmds = fakeExt.received
       .filter((r) => r.command === 'setAgentStatus')
       .map((r) => r.args.status);
     assert.ok(statusCmds.includes('thinking'), 'should send thinking status');
-    assert.ok(statusCmds.includes('idle'), 'should send idle status');
-    const thinkingIdx = statusCmds.indexOf('thinking');
-    const idleIdx = statusCmds.indexOf('idle');
-    assert.ok(thinkingIdx < idleIdx, 'thinking should come before idle');
+    assert.ok(!statusCmds.includes('idle'), 'idle should be debounced, not sent yet');
   });
 
   it('returns error for unknown tool', async () => {

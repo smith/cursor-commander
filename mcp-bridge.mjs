@@ -226,6 +226,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 }));
 
 let activeToolCalls = 0;
+let idleTimer = null;
+const IDLE_DELAY_MS = 30_000;
 
 async function sendStatusUpdate(status) {
 	try {
@@ -241,6 +243,7 @@ async function sendStatusUpdate(status) {
 }
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
+	if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
 	activeToolCalls++;
 	if (activeToolCalls === 1) { await sendStatusUpdate('thinking'); }
 
@@ -267,7 +270,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 		}
 	} finally {
 		activeToolCalls--;
-		if (activeToolCalls === 0) { await sendStatusUpdate('idle'); }
+		if (activeToolCalls === 0) {
+			idleTimer = setTimeout(() => {
+				sendStatusUpdate('idle').catch(() => {});
+				idleTimer = null;
+			}, IDLE_DELAY_MS);
+		}
 	}
 });
 
