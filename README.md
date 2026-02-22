@@ -27,6 +27,17 @@ Then install the generated `.vsix` file in Cursor:
 
 The MCP server is already configured in `~/.cursor/mcp.json`.
 
+## Agent status indicator
+
+A green dot in the status bar shows whether the agent is active:
+
+- **Flashing green dot** — agent is actively making tool calls
+- **Solid green dot** — agent is idle, waiting for you
+
+The extension detects activity automatically by tracking HTTP requests from the MCP bridge. When a tool call comes in, the dot starts flashing. After 8 seconds of silence, it settles to solid. No configuration needed — it activates on the first tool call in a session.
+
+The `setAgentStatus` command is still available as a manual override.
+
 ## Available tools
 
 | Tool | Description |

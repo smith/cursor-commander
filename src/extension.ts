@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 const PORTS_DIR = path.join(os.homedir(), '.cursor-commander-ports');
+const IDLE_AFTER_MS = 8000;
 
 function sanitizeWorkspacePath(fsPath: string): string {
 	return fsPath.replace(/^\//, '').replace(/\//g, '-');
@@ -27,12 +28,69 @@ function getPortFilePath(): string {
 let server: http.Server | undefined;
 let portFilePath: string | undefined;
 let agentStatusItem: vscode.StatusBarItem;
-let agentStatusTimeout: ReturnType<typeof setTimeout> | undefined;
+let flashInterval: ReturnType<typeof setInterval> | undefined;
+let flashOn = true;
+
+// Agent activity detection via HTTP request tracking
+let lastRequestTime = 0;
+let activityPollInterval: ReturnType<typeof setInterval> | undefined;
+let currentStatus: 'thinking' | 'idle' | 'hidden' = 'hidden';
+
+function startFlash() {
+	if (flashInterval) { return; }
+	flashOn = true;
+	agentStatusItem.text = '$(circle-filled)';
+	flashInterval = setInterval(() => {
+		flashOn = !flashOn;
+		agentStatusItem.text = flashOn ? '$(circle-filled)' : '$(circle-outline)';
+	}, 600);
+}
+
+function stopFlash() {
+	if (flashInterval) { clearInterval(flashInterval); flashInterval = undefined; }
+	agentStatusItem.text = '$(circle-filled)';
+}
+
+function setAgentStatusDisplay(status: 'thinking' | 'idle' | 'hidden') {
+	if (status === currentStatus) { return; }
+	currentStatus = status;
+	const green = new vscode.ThemeColor('testing.iconPassed');
+	if (status === 'thinking') {
+		agentStatusItem.tooltip = 'Agent is working...';
+		agentStatusItem.color = green;
+		agentStatusItem.show();
+		startFlash();
+	} else if (status === 'idle') {
+		stopFlash();
+		agentStatusItem.tooltip = 'Waiting for you';
+		agentStatusItem.color = green;
+		agentStatusItem.show();
+	} else {
+		stopFlash();
+		agentStatusItem.hide();
+	}
+}
+
+function onRequestActivity() {
+	lastRequestTime = Date.now();
+	setAgentStatusDisplay('thinking');
+}
+
+function startActivityPolling() {
+	activityPollInterval = setInterval(() => {
+		if (lastRequestTime === 0) { return; }
+		if (currentStatus === 'thinking' && Date.now() - lastRequestTime >= IDLE_AFTER_MS) {
+			setAgentStatusDisplay('idle');
+		}
+	}, 1000);
+}
 
 export function activate(context: vscode.ExtensionContext) {
 	agentStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
 	agentStatusItem.name = 'Agent Status';
 	context.subscriptions.push(agentStatusItem);
+
+	startActivityPolling();
 
 	server = http.createServer(async (req, res) => {
 		if (req.method !== 'POST') {
@@ -41,12 +99,15 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
+		onRequestActivity();
+
 		let body = '';
 		req.on('data', (chunk: string) => body += chunk);
 		req.on('end', async () => {
 			try {
 				const { command, args } = JSON.parse(body);
 				const result = await handleCommand(command, args || {});
+				onRequestActivity();
 				res.writeHead(200, { 'Content-Type': 'application/json' });
 				res.end(JSON.stringify({ success: true, result }));
 			} catch (err: any) {
@@ -177,21 +238,12 @@ async function handleCommand(command: string, args: any): Promise<any> {
 		}
 
 		case 'setAgentStatus': {
-			if (agentStatusTimeout) { clearTimeout(agentStatusTimeout); }
 			if (args.status === 'thinking') {
-				agentStatusItem.text = '$(loading~spin)';
-				agentStatusItem.tooltip = 'Agent is working...';
-				agentStatusItem.color = undefined;
-				agentStatusItem.show();
-				agentStatusTimeout = setTimeout(() => agentStatusItem.hide(), 10 * 60 * 1000);
+				setAgentStatusDisplay('thinking');
 			} else if (args.status === 'idle') {
-				agentStatusItem.text = '$(circle-filled)';
-				agentStatusItem.tooltip = 'Waiting for you';
-				agentStatusItem.color = new vscode.ThemeColor('testing.iconPassed');
-				agentStatusItem.show();
-				agentStatusTimeout = setTimeout(() => agentStatusItem.hide(), 3 * 60 * 1000);
+				setAgentStatusDisplay('idle');
 			} else {
-				agentStatusItem.hide();
+				setAgentStatusDisplay('hidden');
 			}
 			return `Agent status: ${args.status}`;
 		}
@@ -202,7 +254,8 @@ async function handleCommand(command: string, args: any): Promise<any> {
 }
 
 function cleanup() {
-	if (agentStatusTimeout) { clearTimeout(agentStatusTimeout); }
+	stopFlash();
+	if (activityPollInterval) { clearInterval(activityPollInterval); }
 	server?.close();
 	if (portFilePath) {
 		try { fs.unlinkSync(portFilePath); } catch {}
