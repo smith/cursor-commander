@@ -3,6 +3,7 @@
   "displayName": "Cursor Commander",
   "description": "Exposes VS Code/Cursor editor commands as MCP tools",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "publisher": "smith",
   "engines": {
